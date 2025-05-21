@@ -15,17 +15,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d750af042f7ef4f724306de029d18836c26c1765a54a6a3f094cbd23a7267ffa"
 
 [[package]]
+name = "perfblock"
+version = "0.1.0"
+dependencies = [
+ "perfcnt",
+]
+
+[[package]]
 name = "perfcnt"
 version = "0.7.3-mod"
 source = "git+https://github.com/maxi-k/rust-perfcnt-less-deps?rev=990464c#990464cc1412ec1746d5b3b1f1af3eb28dfd1596"
 dependencies = [
  "bitflags",
  "libc",
-]
-
-[[package]]
-name = "perfevent"
-version = "0.1.0"
-dependencies = [
- "perfcnt",
 ]

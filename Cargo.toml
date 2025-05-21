@@ -1,7 +1,9 @@
 [package]
-name = "perfevent"
+name = "perfblock"
 version = "0.1.0"
 edition = "2021"
+homepage = "https://github.com/maxi-k/perfevent-rs"
+repository = "https://github.com/maxi-k/perfevent-rs"
 
 [dependencies]
 perfcnt = { git = "https://github.com/maxi-k/rust-perfcnt-less-deps", rev = "990464c", features = [] }

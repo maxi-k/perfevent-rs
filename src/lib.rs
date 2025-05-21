@@ -1,16 +1,43 @@
-//! Single-file RAII wrapper replicating https://github.com/viktorleis/perfevent
-//! Requires `perf-event` >= 0.4 (tested with 0.4.8).
+//! Rust rewrite of the venerable <https://github.com/viktorleis/perfevent>
+//! with some rust-specific niceties and improvements.
 //!
-//! Usage example (similar to the C++ API):
-//! ```ignore
-//! let mut params = BenchmarkParameters::default();
-//! params.set("query", "Q1");
-//! { // scope measured
-//!   let _blk = PerfEventBlock::new(/*scale=*/1, params, /*print_header=*/true)?;
-//!   //   // do some work
-//! }
+//! Usage example (using the C++-like RAII API):
+//! ```rust
+//! use perfblock::*;
+//! use std::thread::sleep;
+//! use std::time::Duration;
+//!
+//! let params = BenchmarkParameters::default(); // additional output columns
+//! {
+//!   let perf = PerfEventBlock::default_events(/*scale*/1, params, /*print header*/true);
+//!   sleep(Duration::from_millis(10));
+//! } // <- `perf` dropped here, counters stopped, statistics printed
 //! ```
-//! // when `_blk` goes out of scope, statistics are printed automatically
+//!
+//! Lambda-style API:
+//! ```rust
+//! use perfblock::*;
+//! PerfEventBlock::default_params(1000, true).measure(|p: &mut PerfEventBlock| {
+//!     let mut res = 1;
+//!     for i in 1..(1000*p.scale()) {
+//!         // std::hint::black_box re-exported for convenience
+//!         p.black_box(res += i);
+//!     }
+//!     p.param("res", res.to_string());
+//! });
+//! ```
+//!
+//! Custom Events:
+//! ```rust
+//! use perfblock::*;
+//! PerfEventBlock::new(1000, Events::default().add_all([
+//!     ("tlb-miss", Builder::from_cache_event(CacheId::DTLB, CacheOpId::Read, CacheOpResultId::Miss)),
+//!     ("page-faults", Builder::from_software_event(SoftwareEventType::PageFaults)),
+//! ]), BenchmarkParameters::default(), true).measure(|p| {
+//!     // long computation
+//! });
+//!
+//! ```
 // re-export
 pub use perfcnt::AbstractPerfCounter;
 pub use perfcnt::linux::{
@@ -78,9 +105,9 @@ impl Events {
 
 /// Low-level counter group.
 pub struct PerfEvent {
-    ctrs:    Vec<perfcnt::PerfCounter>,   // in the same order as `names`
+    ctrs:    Vec<perfcnt::PerfCounter>, // in the same order as `names`
     names:   Vec<String>,
-    counts:  Vec<u64>,       // filled by `stop_counters`
+    counts:  Vec<u64>,                  // filled by `stop_counters`
     t_start: Instant,
     t_stop: Instant,
 }
@@ -89,12 +116,6 @@ impl Default for PerfEvent {
     /// Construct with the default counter set.
     fn default() -> Self {
         Self::new(Events::default())
-    }
-}
-
-impl Drop for PerfEvent {
-    fn drop(&mut self) {
-        let _ = self.drop_inner();
     }
 }
 
@@ -129,7 +150,6 @@ impl PerfEvent {
 
     /// Start the registered counters
     pub fn start_counters(&mut self) -> io::Result<()> {
-        println!("starting counters");
         let res = self.ctrs.iter().map(|c| { c.reset()?; c.start() }).find(|c| c.is_err());
         if let Some(err) = res {
             self.ctrs.iter().for_each(|c| { let _ = c.stop(); });
@@ -142,11 +162,9 @@ impl PerfEvent {
 
     /// Stop the registered counters
     pub fn stop_counters(&mut self) -> io::Result<()> {
-        println!("stopping counters");
         self.t_stop = Instant::now();
         match self.ctrs.iter_mut().enumerate().map(|(idx, c)| {
             self.counts[idx] = c.read()?;
-            println!("counter {} has value {}", self.names[idx], self.counts[idx]);
             c.stop()?;
             Ok(())
         }).find(|c| c.is_err()) {
@@ -177,19 +195,9 @@ impl PerfEvent {
         b.on_cpu(-1) // all cpus
          .for_pid(0) // calling process
          .inherit()
-         .disable() // start disabled
-         .finish() // buildi
+         .disable()  // start disabled
+         .finish()   // build
          .expect("Error opening counter")
-    }
-
-    /// Internal implementation of Drop
-    fn drop_inner(&mut self) -> io::Result<()>  {
-        self.names.clear();
-        self.counts.clear();
-        match self.ctrs.iter_mut().map(|c| c.close() ).find(|c| c.is_err()) {
-            Some(e) => e,
-            None => Ok(())
-        }
     }
 
     /// Counter value by index.
@@ -330,7 +338,6 @@ impl PerfEventBlock {
 impl Drop for PerfEventBlock {
     /// Finalize the PerfEventBlock, stopping the counters and printing them
     fn drop(&mut self) {
-        println!("dropping perfevent block");
         if self.inner.stop_counters().is_ok() {
             let mut hdr = String::new();
             let mut dat = String::new();
@@ -352,18 +359,32 @@ mod tests {
     use std::thread::sleep;
     use std::time::Duration;
 
-    #[test]
-    fn sleep_only() {
-        let params = BenchmarkParameters::default();
-        {
-            let _block = PerfEventBlock::default_events(1, params, true);
-            sleep(Duration::from_millis(10));
-        }
-    }
+    // #[test]
+    // fn sleep_only() {
+    //     let params = BenchmarkParameters::default();
+    //     {
+    //         let _block = PerfEventBlock::default_events(1, params, true);
+    //         sleep(Duration::from_millis(10));
+    //     }
+    // }
+
+    // #[test]
+    // fn long_computation_with_black_box() {
+    //     PerfEventBlock::default_params(1000, true).measure(|p| {
+    //         let mut res = 1;
+    //         for i in 1..(1000*p.scale()) {
+    //             p.black_box(res += i);
+    //         }
+    //         p.param("res", res.to_string());
+    //     });
+    // }
 
     #[test]
-    fn long_computation_with_black_box() {
-        PerfEventBlock::default_params(1000*1000, true).measure(|p| {
+    fn custom_events() {
+        PerfEventBlock::new(1000, Events::default().add_all([
+            ("tlb-miss", Builder::from_cache_event(CacheId::DTLB, CacheOpId::Read, CacheOpResultId::Miss)),
+            ("page-faults", Builder::from_software_event(SoftwareEventType::PageFaults)),
+        ]), BenchmarkParameters::default(), true).measure(|p| {
             let mut res = 1;
             for i in 1..(1000*p.scale()) {
                 p.black_box(res += i);
