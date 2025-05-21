@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-perf-event = "0.4.8"
+perfcnt = { git = "https://github.com/maxi-k/rust-perfcnt-less-deps", rev = "990464c", features = [] }
