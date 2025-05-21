@@ -44,6 +44,7 @@ pub use perfcnt::linux::{
     CacheId, CacheOpId, CacheOpResultId, HardwareEventType, SoftwareEventType,
     PerfCounterBuilderLinux as Builder
 };
+use perfcnt::linux::{PerfCounter, FileReadFormat};
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -103,11 +104,45 @@ impl Events {
 ////////////////////////////////////////////////////////////////////////////////
 // PerfEvent 
 
+struct CounterState {
+    counter: perfcnt::PerfCounter,
+    start: FileReadFormat,
+    end: FileReadFormat,
+}
+impl CounterState {
+
+    fn start(&mut self) ->  io::Result<()> {
+        self.counter.reset()?;
+        self.counter.start()?;
+        self.start = self.counter.read_fd()?;
+        Ok(())
+    }
+
+    fn stop(&mut self) -> io::Result<()> {
+        self.counter.stop()?;
+        self.end = self.counter.read_fd()?;
+        Ok(())
+    }
+
+    fn read(&self) -> f64 {
+        let correction = ((self.end.time_enabled - self.start.time_enabled) as f64) / ((self.end.time_running - self.start.time_running) as f64);
+        ((self.end.value - self.start.value) as f64) * correction
+    }
+
+    fn empty_read_format() -> FileReadFormat {
+        FileReadFormat { value: 0, time_enabled: 0, time_running: 0, id: 0 }
+    }
+}
+impl From<PerfCounter> for CounterState {
+    fn from(counter: PerfCounter) -> Self {
+        CounterState{counter, start: Self::empty_read_format(), end: Self::empty_read_format() }
+    }
+}
+
 /// Low-level counter group.
 pub struct PerfEvent {
-    ctrs:    Vec<perfcnt::PerfCounter>, // in the same order as `names`
+    ctrs:    Vec<CounterState>, // in the same order as `names`
     names:   Vec<String>,
-    counts:  Vec<u64>,                  // filled by `stop_counters`
     t_start: Instant,
     t_stop: Instant,
 }
@@ -135,24 +170,21 @@ impl PerfEvent {
             ctrs.push(c);
             names.push((*name).to_owned());
         }
-        let len = ctrs.len();
-
-        Ok(Self { ctrs, names, counts: vec![0; len], t_start: Instant::now(), t_stop: Instant::now() })
+        Ok(Self { ctrs, names, t_start: Instant::now(), t_stop: Instant::now() })
     }
 
     /// Register an additional counter *before* calling `stop_counters`.
     pub fn register_counter<E: Into<Builder>>(&mut self, event: E, name: &str) -> io::Result<()> {
         self.ctrs.push(Self::finalize_builder(event.into()));
         self.names.push(name.to_owned());
-        self.counts.push(0);
         Ok(())
     }
 
     /// Start the registered counters
     pub fn start_counters(&mut self) -> io::Result<()> {
-        let res = self.ctrs.iter().map(|c| { c.reset()?; c.start() }).find(|c| c.is_err());
+        let res = self.ctrs.iter_mut().map(|c| c.start()).find(|c| c.is_err());
         if let Some(err) = res {
-            self.ctrs.iter().for_each(|c| { let _ = c.stop(); });
+            self.ctrs.iter_mut().for_each(|c| { let _ = c.stop(); });
             err
         } else {
             self.t_start = Instant::now();
@@ -163,11 +195,7 @@ impl PerfEvent {
     /// Stop the registered counters
     pub fn stop_counters(&mut self) -> io::Result<()> {
         self.t_stop = Instant::now();
-        match self.ctrs.iter_mut().enumerate().map(|(idx, c)| {
-            self.counts[idx] = c.read()?;
-            c.stop()?;
-            Ok(())
-        }).find(|c| c.is_err()) {
+        match self.ctrs.iter_mut().map(|c| c.stop()).find(|c| c.is_err()) {
             Some(err) => err,
             None => Ok(())
         }
@@ -191,18 +219,21 @@ impl PerfEvent {
     pub fn ghz(&self) -> f64 { self.get("cycles") / self.get("task-clock") }
 
     /// Finalize a builder spec, converting it into a PerfCounter instance
-    fn finalize_builder(mut b: Builder) -> perfcnt::PerfCounter {
+    fn finalize_builder(mut b: Builder) -> CounterState {
         b.on_cpu(-1) // all cpus
          .for_pid(0) // calling process
          .inherit()
          .disable()  // start disabled
+         .enable_read_format_time_enabled() // multiplexing counters
+         .enable_read_format_time_running()
          .finish()   // build
          .expect("Error opening counter")
+         .into()
     }
 
     /// Counter value by index.
     // TODO Multiplexing correction, see perfevent.hpp:{58,108}
-    fn counter(&self, idx: usize) -> f64 { self.counts[idx] as f64 }
+    fn counter(&self, idx: usize) -> f64 { self.ctrs[idx].read() }
 
     /// Append CSV columns to `hdr` / `dat` respecting `scale`.
     fn write_columns(&self, scale: u64, hdr: &mut String, dat: &mut String) {
@@ -359,14 +390,14 @@ mod tests {
     use std::thread::sleep;
     use std::time::Duration;
 
-    // #[test]
-    // fn sleep_only() {
-    //     let params = BenchmarkParameters::default();
-    //     {
-    //         let _block = PerfEventBlock::default_events(1, params, true);
-    //         sleep(Duration::from_millis(10));
-    //     }
-    // }
+    #[test]
+    fn sleep_only() {
+        let params = BenchmarkParameters::default();
+        {
+            let _block = PerfEventBlock::default_events(1, params, true);
+            sleep(Duration::from_millis(10));
+        }
+    }
 
     // #[test]
     // fn long_computation_with_black_box() {
