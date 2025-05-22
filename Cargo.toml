@@ -1,9 +1,14 @@
 [package]
-name = "perfblock"
+name = "perf-event-block"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "Easy linux perf_event counters for a block of code"
+keywords = ["perf_event", "performance", "linux", "perf"]
 homepage = "https://github.com/maxi-k/perfevent-rs"
 repository = "https://github.com/maxi-k/perfevent-rs"
+exclude = ["default.nix"]
+
 
 [dependencies]
-perfcnt = { git = "https://github.com/maxi-k/rust-perfcnt-less-deps", rev = "990464c", features = [] }
+perfcnt = { version = "0.7.3-mod", git = "https://github.com/maxi-k/rust-perfcnt-less-deps", rev = "990464c", features = [] }
