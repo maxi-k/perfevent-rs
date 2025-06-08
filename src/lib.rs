@@ -51,7 +51,6 @@
 //! perf.stop_counters().expect("error stopping counters");
 //! perf.print_columns(scale, true);
 //! ```
-use perfcnt::linux::{PerfCounter, FileReadFormat};
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::io;
@@ -59,8 +58,10 @@ use std::time::Instant;
 
 // re-export
 pub use perfcnt::AbstractPerfCounter;
+#[cfg(unix)]
 pub use perfcnt::linux::{
     CacheId, CacheOpId, CacheOpResultId, HardwareEventType, SoftwareEventType,
+    PerfCounter, FileReadFormat,
     PerfCounterBuilderLinux as Builder
 };
 

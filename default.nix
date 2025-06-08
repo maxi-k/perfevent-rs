@@ -1,4 +1,4 @@
-{ pkgs ? import (fetchTarball channel:nixos-24.11) {} }:
+{ pkgs ? import (fetchTarball channel:nixos-25.05) {} }:
 
 with pkgs;
 stdenv.mkDerivation {

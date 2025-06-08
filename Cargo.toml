@@ -10,5 +10,10 @@ repository = "https://github.com/maxi-k/perfevent-rs"
 exclude = ["default.nix"]
 
 
+# TODO figure out how to wrap perfcnt cross-platform without
+# breaking our public API (which can use event types etc.).
+# Probably need to fork it somehow anyway...
+#
+# [target.'cfg(unix)'.dependencies]
 [dependencies]
 perfcnt = { version = "0.7.3-mod", git = "https://github.com/maxi-k/rust-perfcnt-less-deps", rev = "990464c", features = [] }
