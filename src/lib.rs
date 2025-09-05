@@ -110,6 +110,10 @@ impl Events {
         self.0.iter()
     }
 
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, (&'static str, Builder)> {
+        self.0.iter_mut()
+    }
+
     pub fn into_iter(self) -> std::vec::IntoIter<(&'static str, Builder)> {
         self.0.into_iter()
     }
@@ -164,23 +168,34 @@ pub struct PerfEvent {
 impl Default for PerfEvent {
     /// Construct with the default counter set.
     fn default() -> Self {
-        Self::new(Events::default())
+        Self::new_or_empty(Events::default())
     }
 }
 
 impl PerfEvent {
     /// Construct with the given events; panic if opening any counter fails
-    pub fn new(events: Events) -> Self {
-        Self::try_new(events).expect("Error creating PerfEvent instance")
+    pub fn new(mut events: Events) -> Self {
+        Self::try_new(&mut events).expect("Error creating PerfEvent instance")
+    }
+
+    /// Construct with the given events; print an error if opening any counter fails, but continue
+    pub fn new_or_empty(mut events: Events) -> Self {
+        match Self::try_new(&mut events) {
+            Ok(ok) => ok,
+            Err(err) => {
+                eprintln!("error opening counter cycles: {}", err);
+                Self { ctrs: Vec::new(), names: Vec::new(), t_start: Instant::now(), t_stop: Instant::now() }
+            }
+        }
     }
 
     /// Try to construct with the given events, fail if opening a counter fails
-    pub fn try_new(events: Events) -> io::Result<Self> {
+    pub fn try_new(events: &mut Events) -> io::Result<Self> {
         let mut ctrs  = Vec::with_capacity(events.len());
         let mut names = Vec::with_capacity(events.len());
 
-        for (name, builder) in events.into_iter() {
-            let c = Self::finalize_builder(builder);
+        for (name, builder) in events.iter_mut() {
+            let c = Self::finalize_builder(builder)?;
             ctrs.push(c);
             names.push((*name).to_owned());
         }
@@ -189,7 +204,7 @@ impl PerfEvent {
 
     /// Register an additional counter *before* calling `stop_counters`.
     pub fn register_counter<E: Into<Builder>>(&mut self, event: E, name: &str) -> io::Result<()> {
-        self.ctrs.push(Self::finalize_builder(event.into()));
+        self.ctrs.push(Self::finalize_builder(&mut event.into())?);
         self.names.push(name.to_owned());
         Ok(())
     }
@@ -224,9 +239,9 @@ impl PerfEvent {
         self.names.iter().position(|n| n == name).map(|i| self.counter(i))
     }
 
-    /// Counter value by name, or `-1` if the name is unknown.
+    /// Counter value by name, or `NaN` if the name is unknown.
     pub fn get(&self, name: &str) -> f64 {
-        self.try_get(name).unwrap_or(-1.0)
+        self.try_get(name).unwrap_or(f64::NAN)
     }
 
     /// Derived metrics
@@ -237,17 +252,16 @@ impl PerfEvent {
     pub fn ghz(&self) -> f64 { self.get("cycles") / self.get("task-clock") }
 
     /// Finalize a builder spec, converting it into a PerfCounter instance
-    fn finalize_builder(mut b: Builder) -> CounterState {
-        b.on_cpu(-1) // all cpus
-         .for_pid(0) // calling process
-         .inherit()
-         .disable()  // start disabled
-         .enable_read_format_time_enabled() // multiplexing counters
-         .enable_read_format_time_running()
-         .enable_read_format_id()
-         .finish()   // build
-         .expect("Error opening counter")
-         .into()
+    fn finalize_builder(b: &mut Builder) -> io::Result<CounterState> {
+        let built = b.on_cpu(-1) // all cpus
+            .for_pid(0) // calling process
+            .inherit()
+            .disable()  // start disabled
+            .enable_read_format_time_enabled() // multiplexing counters
+            .enable_read_format_time_running()
+            .enable_read_format_id()
+            .finish()?;   // build
+        Ok(built.into())
     }
 
     /// Append CSV columns to `hdr` / `dat` respecting `scale`.
@@ -341,7 +355,7 @@ impl PerfEventBlock {
 
     /// Create a new PerfEventBlock instance with custom events, output columns, and scale
     pub fn new(scale: u64, events: Events, params: BenchmarkParameters, print_header: bool) -> Self {
-        let mut res = Self { inner: PerfEvent::new(events), scale, params, print_header };
+        let mut res = Self { inner: PerfEvent::new_or_empty(events), scale, params, print_header };
         res.inner.start_counters().expect("Error starting counters");
         res
     }
