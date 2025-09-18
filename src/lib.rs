@@ -316,14 +316,17 @@ impl ColumnWriter for (&mut String, &mut String) {
 pub struct BenchmarkParameters(BTreeMap<String, String>);
 impl BenchmarkParameters {
     pub fn new<S1: Into<String>, S2: Into<String>>(params: impl IntoIterator<Item = (S1, S2)>) -> Self {
-        let mut m = BTreeMap::new();
-        params.into_iter().for_each(|(k, v)| { m.insert(k.into(), v.into()); });
-        Self(m)
+        let mut m = Self(BTreeMap::new());
+        m.set_all(params);
+        m
     }
     pub fn set<K: Into<String>, V: Into<String>>(&mut self, k: K, v: V) { self.0.insert(k.into(), v.into()); }
     pub fn with<K: Into<String>, V: Into<String>>(mut self, k: K, v: V) -> Self {
         self.set(k, v);
         self
+    }
+    pub fn set_all<S1: Into<String>, S2: Into<String>>(&mut self, params: impl IntoIterator<Item = (S1, S2)>) {
+        params.into_iter().for_each(|(k, v)| { self.0.insert(k.into(), v.into()); } );
     }
     fn write_columns(&self, hdr: &mut String, dat: &mut String) {
         let mut cols = (hdr, dat);
@@ -375,6 +378,17 @@ impl PerfEventBlock {
     pub fn param<S1: Into<String>, S2: Into<String>>(&mut self, k: S1, v: S2) -> &mut Self {
         self.params.set(k, v);
         self
+    }
+
+    /// Set multiple parameters
+    pub fn params<S1: Into<String>, S2: Into<String>>(&mut self, params: impl IntoIterator<Item = (S1, S2)>) -> &mut Self {
+        self.params.set_all(params);
+        self
+    }
+
+    /// Sets some final parameters (measured externally), then drops, printing statistics
+    pub fn finalize_with<S1: Into<String>, S2: Into<String>>(mut self, params: impl IntoIterator<Item = (S1, S2)>) {
+        self.params(params);
     }
 
     /// Get the associated PerfEvent instance
