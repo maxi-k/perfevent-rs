@@ -57,16 +57,15 @@ use std::io;
 use std::time::Instant;
 
 // re-export
-pub use perfcnt::AbstractPerfCounter;
 #[cfg(unix)]
 pub use perfcnt::linux::{
-    CacheId, CacheOpId, CacheOpResultId, HardwareEventType, SoftwareEventType,
-    PerfCounter, FileReadFormat,
-    PerfCounterBuilderLinux as Builder
+    CacheId, CacheOpId, CacheOpResultId, FileReadFormat, HardwareEventType, PerfCounter, PerfCounterBuilderLinux as Builder,
+    SoftwareEventType,
 };
+pub use perfcnt::AbstractPerfCounter;
 
 ////////////////////////////////////////////////////////////////////////////////
-// Linux Event Counters 
+// Linux Event Counters
 
 trait BuilderExt: Sized {
     fn apply<F: FnOnce(&mut Self)>(mut self, f: F) -> Self {
@@ -80,13 +79,18 @@ pub struct Events(Vec<(&'static str, Builder)>);
 impl Default for Events {
     fn default() -> Self {
         Self(vec![
-            ("cycles",            Builder::from_hardware_event(HardwareEventType::CPUCycles)),
-            ("kcycles",           Builder::from_hardware_event(HardwareEventType::CPUCycles).apply(|b| { b.exclude_user(); })),
-            ("instructions",      Builder::from_hardware_event(HardwareEventType::Instructions)),
-            ("L1-misses",         Builder::from_cache_event(CacheId::L1D, CacheOpId::Read, CacheOpResultId::Miss)),
-            ("LLC-misses",        Builder::from_hardware_event(HardwareEventType::CacheMisses)),
-            ("branch-misses",     Builder::from_hardware_event(HardwareEventType::BranchMisses)),
-            ("task-clock",        Builder::from_software_event(SoftwareEventType::TaskClock)),
+            ("cycles", Builder::from_hardware_event(HardwareEventType::CPUCycles)),
+            (
+                "kcycles",
+                Builder::from_hardware_event(HardwareEventType::CPUCycles).apply(|b| {
+                    b.exclude_user();
+                }),
+            ),
+            ("instructions", Builder::from_hardware_event(HardwareEventType::Instructions)),
+            ("L1-misses", Builder::from_cache_event(CacheId::L1D, CacheOpId::Read, CacheOpResultId::Miss)),
+            ("LLC-misses", Builder::from_hardware_event(HardwareEventType::CacheMisses)),
+            ("branch-misses", Builder::from_hardware_event(HardwareEventType::BranchMisses)),
+            ("task-clock", Builder::from_software_event(SoftwareEventType::TaskClock)),
         ])
     }
 }
@@ -120,7 +124,7 @@ impl Events {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// PerfEvent 
+// PerfEvent
 
 struct CounterState {
     counter: perfcnt::PerfCounter,
@@ -128,8 +132,7 @@ struct CounterState {
     end: FileReadFormat,
 }
 impl CounterState {
-
-    fn start(&mut self) ->  io::Result<()> {
+    fn start(&mut self) -> io::Result<()> {
         self.counter.reset()?;
         self.counter.start()?;
         self.start = self.counter.read_fd()?;
@@ -143,24 +146,34 @@ impl CounterState {
     }
 
     fn read(&self) -> f64 {
-        let correction = ((self.end.time_enabled - self.start.time_enabled) as f64) / ((self.end.time_running - self.start.time_running) as f64);
+        let correction = ((self.end.time_enabled - self.start.time_enabled) as f64)
+            / ((self.end.time_running - self.start.time_running) as f64);
         ((self.end.value - self.start.value) as f64) * correction
     }
 
     fn empty_read_format() -> FileReadFormat {
-        FileReadFormat { value: 0, time_enabled: 0, time_running: 0, id: 0 }
+        FileReadFormat {
+            value: 0,
+            time_enabled: 0,
+            time_running: 0,
+            id: 0,
+        }
     }
 }
 impl From<PerfCounter> for CounterState {
     fn from(counter: PerfCounter) -> Self {
-        CounterState{counter, start: Self::empty_read_format(), end: Self::empty_read_format() }
+        CounterState {
+            counter,
+            start: Self::empty_read_format(),
+            end: Self::empty_read_format(),
+        }
     }
 }
 
 /// Low-level counter group.
 pub struct PerfEvent {
-    ctrs:    Vec<CounterState>, // in the same order as `names`
-    names:   Vec<String>,
+    ctrs: Vec<CounterState>, // in the same order as `names`
+    names: Vec<String>,
     t_start: Instant,
     t_stop: Instant,
 }
@@ -184,14 +197,19 @@ impl PerfEvent {
             Ok(ok) => ok,
             Err(err) => {
                 eprintln!("error opening counter cycles: {}", err);
-                Self { ctrs: Vec::new(), names: Vec::new(), t_start: Instant::now(), t_stop: Instant::now() }
+                Self {
+                    ctrs: Vec::new(),
+                    names: Vec::new(),
+                    t_start: Instant::now(),
+                    t_stop: Instant::now(),
+                }
             }
         }
     }
 
     /// Try to construct with the given events, fail if opening a counter fails
     pub fn try_new(events: &mut Events) -> io::Result<Self> {
-        let mut ctrs  = Vec::with_capacity(events.len());
+        let mut ctrs = Vec::with_capacity(events.len());
         let mut names = Vec::with_capacity(events.len());
 
         for (name, builder) in events.iter_mut() {
@@ -199,7 +217,12 @@ impl PerfEvent {
             ctrs.push(c);
             names.push((*name).to_owned());
         }
-        Ok(Self { ctrs, names, t_start: Instant::now(), t_stop: Instant::now() })
+        Ok(Self {
+            ctrs,
+            names,
+            t_start: Instant::now(),
+            t_stop: Instant::now(),
+        })
     }
 
     /// Register an additional counter *before* calling `stop_counters`.
@@ -214,9 +237,11 @@ impl PerfEvent {
         let mut res: Vec<io::Error> = self.ctrs.iter_mut().map(|c| c.start()).filter_map(|c| c.err()).collect();
         match res.pop() {
             Some(err) => {
-                self.ctrs.iter_mut().for_each(|c| { let _ = c.stop(); });
+                self.ctrs.iter_mut().for_each(|c| {
+                    let _ = c.stop();
+                });
                 Err(err)
-            },
+            }
             None => {
                 self.t_start = Instant::now();
                 Ok(())
@@ -230,7 +255,7 @@ impl PerfEvent {
         let mut res: Vec<io::Error> = self.ctrs.iter_mut().map(|c| c.stop()).filter_map(|c| c.err()).collect();
         match res.pop() {
             Some(err) => Err(err),
-            None => Ok(())
+            None => Ok(()),
         }
     }
 
@@ -245,22 +270,33 @@ impl PerfEvent {
     }
 
     /// Derived metrics
-    pub fn duration(&self) -> f64 { self.t_stop.duration_since(self.t_start).as_secs_f64() }
-    pub fn duration_us(&self) -> u128 { self.t_stop.duration_since(self.t_start).as_nanos() }
-    pub fn ipc(&self) -> f64 { self.get("instructions") / self.get("cycles") }
-    pub fn cpus(&self) -> f64 { self.get("task-clock") / (self.duration_us() as f64) }
-    pub fn ghz(&self) -> f64 { self.get("cycles") / self.get("task-clock") }
+    pub fn duration(&self) -> f64 {
+        self.t_stop.duration_since(self.t_start).as_secs_f64()
+    }
+    pub fn duration_us(&self) -> u128 {
+        self.t_stop.duration_since(self.t_start).as_nanos()
+    }
+    pub fn ipc(&self) -> f64 {
+        self.get("instructions") / self.get("cycles")
+    }
+    pub fn cpus(&self) -> f64 {
+        self.get("task-clock") / (self.duration_us() as f64)
+    }
+    pub fn ghz(&self) -> f64 {
+        self.get("cycles") / self.get("task-clock")
+    }
 
     /// Finalize a builder spec, converting it into a PerfCounter instance
     fn finalize_builder(b: &mut Builder) -> io::Result<CounterState> {
-        let built = b.on_cpu(-1) // all cpus
+        let built = b
+            .on_cpu(-1) // all cpus
             .for_pid(0) // calling process
             .inherit()
-            .disable()  // start disabled
+            .disable() // start disabled
             .enable_read_format_time_enabled() // multiplexing counters
             .enable_read_format_time_running()
             .enable_read_format_id()
-            .finish()?;   // build
+            .finish()?; // build
         Ok(built.into())
     }
 
@@ -268,7 +304,7 @@ impl PerfEvent {
     pub fn write_columns(&self, scale: u64, hdr: &mut String, dat: &mut String) {
         let mut cols = (hdr, dat);
         for (i, name) in self.names.iter().enumerate() {
-            cols.write_f64(name.as_str(), self.counter(i)/scale as f64, 2);
+            cols.write_f64(name.as_str(), self.counter(i) / scale as f64, 2);
         }
         cols.write_u64(&"scale".to_string(), scale);
         for (name, val) in [("IPC", self.ipc()), ("CPUs", self.cpus()), ("GHz", self.ghz())].into_iter() {
@@ -278,15 +314,19 @@ impl PerfEvent {
 
     /// Print the CSV columns to stdout
     pub fn print_columns(&self, scale: u64, header: bool) {
-       let mut hdr = String::new();
-       let mut dat = String::new();
-       self.write_columns(scale, &mut hdr, &mut dat);
-       if header { println!("{}", hdr); }
-       println!("{}", dat);
+        let mut hdr = String::new();
+        let mut dat = String::new();
+        self.write_columns(scale, &mut hdr, &mut dat);
+        if header {
+            println!("{}", hdr);
+        }
+        println!("{}", dat);
     }
 
     /// Counter value by index.
-    fn counter(&self, idx: usize) -> f64 { self.ctrs[idx].read() }
+    fn counter(&self, idx: usize) -> f64 {
+        self.ctrs[idx].read()
+    }
 }
 
 trait ColumnWriter {
@@ -309,7 +349,7 @@ impl ColumnWriter for (&mut String, &mut String) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// BenchmarkParameters 
+// BenchmarkParameters
 
 /// Free-form benchmark meta-data printed as columns.
 #[derive(Default, Clone)]
@@ -320,13 +360,17 @@ impl BenchmarkParameters {
         m.set_all(params);
         m
     }
-    pub fn set<K: Into<String>, V: Into<String>>(&mut self, k: K, v: V) { self.0.insert(k.into(), v.into()); }
+    pub fn set<K: Into<String>, V: Into<String>>(&mut self, k: K, v: V) {
+        self.0.insert(k.into(), v.into());
+    }
     pub fn with<K: Into<String>, V: Into<String>>(mut self, k: K, v: V) -> Self {
         self.set(k, v);
         self
     }
     pub fn set_all<S1: Into<String>, S2: Into<String>>(&mut self, params: impl IntoIterator<Item = (S1, S2)>) {
-        params.into_iter().for_each(|(k, v)| { self.0.insert(k.into(), v.into()); } );
+        params.into_iter().for_each(|(k, v)| {
+            self.0.insert(k.into(), v.into());
+        });
     }
     fn write_columns(&self, hdr: &mut String, dat: &mut String) {
         let mut cols = (hdr, dat);
@@ -337,7 +381,7 @@ impl BenchmarkParameters {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// PerfEventBlock 
+// PerfEventBlock
 
 /// High-level RAII wrapper - starts on construction, prints on drop.
 pub struct PerfEventBlock {
@@ -350,15 +394,24 @@ pub struct PerfEventBlock {
 impl Default for PerfEventBlock {
     /// Create a new PerfEventBlock with scale 1, default events, and no additional columns
     fn default() -> Self {
-        Self { inner: Default::default(), scale: 1, params: Default::default(), print_header: true }
+        Self {
+            inner: Default::default(),
+            scale: 1,
+            params: Default::default(),
+            print_header: true,
+        }
     }
 }
 
 impl PerfEventBlock {
-
     /// Create a new PerfEventBlock instance with custom events, output columns, and scale
     pub fn new(scale: u64, events: Events, params: BenchmarkParameters, print_header: bool) -> Self {
-        let mut res = Self { inner: PerfEvent::new_or_empty(events), scale, params, print_header };
+        let mut res = Self {
+            inner: PerfEvent::new_or_empty(events),
+            scale,
+            params,
+            print_header,
+        };
         res.inner.start_counters().expect("Error starting counters");
         res
     }
@@ -393,7 +446,7 @@ impl PerfEventBlock {
 
     /// Get the associated PerfEvent instance
     pub fn instance(&mut self) -> &mut PerfEvent {
-       &mut self.inner
+        &mut self.inner
     }
 
     /// Get the counter with the given name. Note that this
@@ -405,7 +458,7 @@ impl PerfEventBlock {
 
     /// Get the configured scale
     pub fn scale(&self) -> u64 {
-       self.scale
+        self.scale
     }
 
     /// Convenience function for measuring the content of the passed lambda
@@ -431,7 +484,9 @@ impl Drop for PerfEventBlock {
             (&mut hdr, &mut dat).write_f64("time_sec", self.inner.duration(), 6);
 
             self.inner.write_columns(self.scale, &mut hdr, &mut dat);
-            if self.print_header { println!("\n{}", hdr); }
+            if self.print_header {
+                println!("\n{}", hdr);
+            }
             println!("{}", dat);
         } else {
             eprintln!("Error stopping counters");
@@ -454,23 +509,29 @@ mod tests {
         }
     }
 
-     #[test]
-     fn long_computation_with_black_box() {
-         PerfEventBlock::default_params(1000, true).measure(|p| {
-             let mut res = 1;
-             for i in 1..(1000*p.scale()) {
-                 p.black_box(res += i);
-             }
-             p.param("res", res.to_string());
-         });
-     }
+    #[test]
+    fn long_computation_with_black_box() {
+        PerfEventBlock::default_params(1000, true).measure(|p| {
+            let mut res = 1;
+            for i in 1..(1000 * p.scale()) {
+                p.black_box(res += i);
+            }
+            p.param("res", res.to_string());
+        });
+    }
 
     #[test]
     fn custom_events() {
-        PerfEventBlock::new(1000*1000, Events::default().add_all([
-            ("tlb-miss", Builder::from_cache_event(CacheId::DTLB, CacheOpId::Read, CacheOpResultId::Miss)),
-            ("page-faults", Builder::from_software_event(SoftwareEventType::PageFaults)),
-        ]), BenchmarkParameters::default(), true).measure(|p| {
+        PerfEventBlock::new(
+            1000 * 1000,
+            Events::default().add_all([
+                ("tlb-miss", Builder::from_cache_event(CacheId::DTLB, CacheOpId::Read, CacheOpResultId::Miss)),
+                ("page-faults", Builder::from_software_event(SoftwareEventType::PageFaults)),
+            ]),
+            BenchmarkParameters::default(),
+            true,
+        )
+        .measure(|p| {
             let mut res = 1;
             for i in 1..p.scale() {
                 p.black_box(res += i);
@@ -483,7 +544,7 @@ mod tests {
     fn manual_usage() {
         let mut perf = PerfEvent::default();
         perf.start_counters().expect("error starting counters");
-        let scale = 1000*1000*1000;
+        let scale = 1000 * 1000 * 1000;
         let mut res = 1;
         for i in 1..scale {
             std::hint::black_box(res += i);
