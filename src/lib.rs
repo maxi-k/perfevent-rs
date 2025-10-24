@@ -301,8 +301,7 @@ impl PerfEvent {
     }
 
     /// Append CSV columns to `hdr` / `dat` respecting `scale`.
-    pub fn write_columns(&self, scale: u64, hdr: &mut String, dat: &mut String) {
-        let mut cols = (hdr, dat);
+    fn write_columns(&self, scale: u64, mut cols: impl ColumnWriter) {
         for (i, name) in self.names.iter().enumerate() {
             cols.write_f64(name.as_str(), self.counter(i) / scale as f64, 2);
         }
@@ -316,7 +315,7 @@ impl PerfEvent {
     pub fn print_columns(&self, scale: u64, header: bool) {
         let mut hdr = String::new();
         let mut dat = String::new();
-        self.write_columns(scale, &mut hdr, &mut dat);
+        self.write_columns(scale, (&mut hdr, &mut dat));
         if header {
             println!("{}", hdr);
         }
@@ -348,6 +347,15 @@ impl ColumnWriter for (&mut String, &mut String) {
     }
 }
 
+struct TransposedWriter<'a>(usize, &'a mut String);
+impl<'a> ColumnWriter for &mut TransposedWriter<'a> {
+    fn write_str(&mut self, name: &str, val: &str) {
+        let width = self.0;
+        let _ = write!(self.1, "{:>width$}", name);
+        let _ = write!(self.1, "{}", val);
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // BenchmarkParameters
 
@@ -372,8 +380,7 @@ impl BenchmarkParameters {
             self.0.insert(k.into(), v.into());
         });
     }
-    fn write_columns(&self, hdr: &mut String, dat: &mut String) {
-        let mut cols = (hdr, dat);
+    fn write_columns(&self, mut cols: impl ColumnWriter) {
         for (k, v) in &self.0 {
             cols.write_str(k, v);
         }
@@ -382,13 +389,28 @@ impl BenchmarkParameters {
 
 ////////////////////////////////////////////////////////////////////////////////
 // PerfEventBlock
+pub enum PrintMode {
+    Regular(bool), // header
+    Transposed,
+}
+impl Default for PrintMode {
+    fn default() -> Self {
+        PrintMode::Regular(true)
+    }
+}
+
+impl From<bool> for PrintMode {
+    fn from(value: bool) -> Self {
+        PrintMode::Regular(value)
+    }
+}
 
 /// High-level RAII wrapper - starts on construction, prints on drop.
 pub struct PerfEventBlock {
     inner: PerfEvent,
     scale: u64,
     params: BenchmarkParameters,
-    print_header: bool,
+    print_mode: PrintMode,
 }
 
 impl Default for PerfEventBlock {
@@ -398,32 +420,32 @@ impl Default for PerfEventBlock {
             inner: Default::default(),
             scale: 1,
             params: Default::default(),
-            print_header: true,
+            print_mode: Default::default(),
         }
     }
 }
 
 impl PerfEventBlock {
     /// Create a new PerfEventBlock instance with custom events, output columns, and scale
-    pub fn new(scale: u64, events: Events, params: BenchmarkParameters, print_header: bool) -> Self {
+    pub fn new(scale: u64, events: Events, params: BenchmarkParameters, print_mode: impl Into<PrintMode>) -> Self {
         let mut res = Self {
             inner: PerfEvent::new_or_empty(events),
             scale,
             params,
-            print_header,
+            print_mode: print_mode.into(),
         };
         res.inner.start_counters().expect("Error starting counters");
         res
     }
 
     /// Create a new PerfEventBlock instance with default events, custom output columns, and scale
-    pub fn default_events(scale: u64, params: BenchmarkParameters, print_header: bool) -> Self {
-        Self::new(scale, Events::default(), params, print_header)
+    pub fn default_events(scale: u64, params: BenchmarkParameters, print_mode: impl Into<PrintMode>) -> Self {
+        Self::new(scale, Events::default(), params, print_mode)
     }
 
     /// Create a new PerfEventBlock instance with default events, default output columns, and custom scale
-    pub fn default_params(scale: u64, print_header: bool) -> Self {
-        Self::new(scale, Default::default(), Default::default(), print_header)
+    pub fn default_params(scale: u64, print_mode: impl Into<PrintMode>) -> Self {
+        Self::new(scale, Default::default(), Default::default(), print_mode)
     }
 
     /// Set a param (output column) on this instance. Useful for adding columns after
@@ -472,22 +494,37 @@ impl PerfEventBlock {
     pub fn black_box<T>(&self, dummy: T) -> T {
         std::hint::black_box(dummy)
     }
+
+    pub fn print(&self) {
+        match self.print_mode {
+            PrintMode::Regular(header) => {
+                let mut hdr = String::new();
+                let mut dat = String::new();
+                self.params.write_columns((&mut hdr, &mut dat));
+                (&mut hdr, &mut dat).write_f64("time_sec", self.inner.duration(), 6);
+                self.inner.write_columns(self.scale, (&mut hdr, &mut dat));
+                if header {
+                    println!("\n{}", hdr);
+                }
+                println!("{}", dat);
+            }
+            PrintMode::Transposed => {
+                let mut output = String::new();
+                let maxlen = self.params.0.iter().fold(0, |acc, item| acc.max(item.0.len()));
+                let mut wr = TransposedWriter(maxlen, &mut output);
+                self.params.write_columns(&mut wr);
+                self.inner.write_columns(self.scale, &mut wr);
+                println!("{}", output);
+            }
+        }
+    }
 }
 
 impl Drop for PerfEventBlock {
     /// Finalize the PerfEventBlock, stopping the counters and printing them
     fn drop(&mut self) {
         if self.inner.stop_counters().is_ok() {
-            let mut hdr = String::new();
-            let mut dat = String::new();
-            self.params.write_columns(&mut hdr, &mut dat);
-            (&mut hdr, &mut dat).write_f64("time_sec", self.inner.duration(), 6);
-
-            self.inner.write_columns(self.scale, &mut hdr, &mut dat);
-            if self.print_header {
-                println!("\n{}", hdr);
-            }
-            println!("{}", dat);
+            self.print();
         } else {
             eprintln!("Error stopping counters");
         }
