@@ -350,9 +350,9 @@ impl ColumnWriter for (&mut String, &mut String) {
 struct TransposedWriter<'a>(usize, &'a mut String);
 impl<'a> ColumnWriter for &mut TransposedWriter<'a> {
     fn write_str(&mut self, name: &str, val: &str) {
-        let width = self.0;
-        let _ = write!(self.1, "{:>width$}", name);
-        let _ = write!(self.1, "{}", val);
+        let width = self.0 + 1;
+        let _ = write!(self.1, "{:<width$}", name);
+        let _ = write!(self.1, ": {}\n", val);
     }
 }
 
@@ -510,7 +510,10 @@ impl PerfEventBlock {
             }
             PrintMode::Transposed => {
                 let mut output = String::new();
-                let maxlen = self.params.0.iter().fold(0, |acc, item| acc.max(item.0.len()));
+                let maxlen = (self.params.0.iter())
+                    .map(|item| item.0)
+                    .chain(self.inner.names.iter())
+                    .fold(0, |acc, item| acc.max(item.len()));
                 let mut wr = TransposedWriter(maxlen, &mut output);
                 self.params.write_columns(&mut wr);
                 self.inner.write_columns(self.scale, &mut wr);
