@@ -516,6 +516,7 @@ impl PerfEventBlock {
                     .fold(0, |acc, item| acc.max(item.len()));
                 let mut wr = TransposedWriter(maxlen, &mut output);
                 self.params.write_columns(&mut wr);
+                (&mut wr).write_f64("time_sec", self.inner.duration(), 6);
                 self.inner.write_columns(self.scale, &mut wr);
                 println!("{}", output);
             }
