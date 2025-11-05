@@ -328,7 +328,7 @@ impl PerfEvent {
     }
 }
 
-trait ColumnWriter {
+pub trait ColumnWriter {
     fn write_str(&mut self, name: &str, val: &str);
 
     fn write_u64(&mut self, name: &str, val: u64) {
