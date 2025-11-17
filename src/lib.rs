@@ -392,6 +392,7 @@ impl BenchmarkParameters {
 pub enum PrintMode {
     Regular(bool), // header
     Transposed,
+    Disabled,
 }
 impl Default for PrintMode {
     fn default() -> Self {
@@ -489,6 +490,10 @@ impl PerfEventBlock {
         // self dropped here
     }
 
+    pub fn disable_print(&mut self) {
+        self.print_mode = PrintMode::Disabled;
+    }
+
     /// Convenience access to std::hint::black_box
     #[inline]
     pub fn black_box<T>(&self, dummy: T) -> T {
@@ -520,6 +525,7 @@ impl PerfEventBlock {
                 self.inner.write_columns(self.scale, &mut wr);
                 println!("{}", output);
             }
+            PrintMode::Disabled => {}
         }
     }
 }
