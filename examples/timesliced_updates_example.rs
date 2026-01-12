@@ -19,14 +19,16 @@ fn main() {
         perf.update(BenchmarkParameters::default().with("phase", phase))
             .expect("sampler thread still alive");
 
-        let mut acc: u64 = 0;
-        for i in 0..iters {
-            acc = acc.wrapping_add((i as u64).wrapping_mul(31));
-            std::hint::black_box(acc);
-        }
+        for _i in 0..2 {
+            let mut acc: u64 = 0;
+            for i in 0..iters {
+                acc = acc.wrapping_add((i as u64).wrapping_mul(31));
+                std::hint::black_box(acc);
+            }
 
-        // Ensure we see a couple of lines for each phase.
-        sleep(Duration::from_millis(600));
+            // Ensure we see a couple of lines for each phase.
+            sleep(Duration::from_millis(250));
+        }
     }
 
     // A final update so the last printed line includes it.

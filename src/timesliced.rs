@@ -8,34 +8,22 @@ use std::time::{Duration, Instant};
 
 use crate::{BenchmarkParameters, Events, PerfEvent};
 
-fn print_header(params: &BenchmarkParameters, perf: &PerfEvent, scale: u64) {
-    let mut hdr = String::new();
-    let mut dat = String::new();
-
-    params.write_columns((&mut hdr, &mut dat));
-    perf.write_columns(scale, (&mut hdr, &mut dat));
-
-    println!("{}", hdr);
-}
-
 /// Message type for live benchmark-parameter updates.
 ///
 /// Implementations should update (merge/overwrite) values in the provided
 /// [`BenchmarkParameters`].
 pub trait BenchmarkParameterUpdates: Send + 'static {
-    fn apply(self, params: &mut BenchmarkParameters);
+    fn apply(self, params: &mut BenchmarkParameters, scale: &mut u64);
 
-    /// Optional per-update scale override.
-    ///
-    /// If this returns `Some(scale)`, the sampler uses that as the new divisor
-    /// when printing per-slice deltas.
-    fn get_scale(&self) -> Option<usize> {
-        None
+    fn apply_all<I>(params: &mut BenchmarkParameters, scale: &mut u64, iter: I) where Self: Sized, I: Iterator<Item = Self> {
+        for update in iter {
+            update.apply(params, scale);
+        }
     }
 }
 
 impl BenchmarkParameterUpdates for BenchmarkParameters {
-    fn apply(self, params: &mut BenchmarkParameters) {
+    fn apply(self, params: &mut BenchmarkParameters, _scale: &mut u64) {
         params.set_all(self.0);
     }
 }
@@ -132,46 +120,31 @@ fn sampler_loop<Update: BenchmarkParameterUpdates>(
     rx: Receiver<Update>,
 ) {
     let mut params = BenchmarkParameters::default();
-    if let Some(new_scale) = init.get_scale() {
-        scale = new_scale as u64;
-    }
-    init.apply(&mut params);
+    init.apply(&mut params, &mut scale);
 
     let mut last_param_len = params.0.len();
 
     // Ensure these always exist so we can print them as first columns.
-    params.set("slice_us", "");
-    params.set("t_us", "");
+    params.set("duration_ms", "");
+    params.set("timestamp_ms", "");
 
     let t0 = Instant::now();
     let mut last_t = t0;
 
     let mut dat = String::new();
-    let mut _hdr = String::new();
+    let mut hdr = String::new();
     while !stop.load(Ordering::Relaxed) {
         dat.clear();
-        _hdr.clear();
+        hdr.clear();
         thread::sleep(period);
 
         // Drain parameter updates.
-        for upd in rx.try_iter() {
-            if let Some(new_scale) = upd.get_scale() {
-                scale = new_scale as u64;
-            }
-            upd.apply(&mut params);
-        }
-
-        // If parameter keys changed, re-print the header (cheap heuristic).
-        let param_len = params.0.len();
-        if header && param_len != last_param_len {
-            last_param_len = param_len;
-            print_header(&params, &perf, scale);
-        }
+        Update::apply_all(&mut params, &mut scale, rx.try_iter());
 
         let now = Instant::now();
-        let slice_dur = now.duration_since(last_t);
-        let slice_us = slice_dur.as_micros() as u64;
-        let t_us = now.duration_since(t0).as_micros() as u64;
+        let slice_duration = now.duration_since(last_t);
+        let duration_ms = slice_duration.as_millis() as u64;
+        let timestamp_ms = now.duration_since(t0).as_millis() as u64;
         last_t = now;
 
         if let Err(e) = perf.fetch_current_counters() {
@@ -179,16 +152,22 @@ fn sampler_loop<Update: BenchmarkParameterUpdates>(
             break;
         }
 
-        params.set("slice_us", slice_us.to_string());
-        params.set("t_us", t_us.to_string());
+        params.set("duration_ms", duration_ms.to_string());
+        params.set("timestamp_ms", timestamp_ms.to_string());
 
-        params.write_columns((&mut _hdr, &mut dat));
+        params.write_columns((&mut hdr, &mut dat));
 
         // Use PerfEvent's built-in derived metrics + formatting.
         // Since we operate on a slice window (start..end) these counters represent
         // *deltas* for the slice.
-        perf.write_columns(scale, (&mut _hdr, &mut dat));
+        perf.write_columns(scale, (&mut hdr, &mut dat));
 
+        // If parameter keys changed, re-print the header (cheap heuristic).
+        let param_len = params.0.len();
+        if header && param_len != last_param_len {
+            last_param_len = param_len;
+            println!("{}", hdr);
+        }
         println!("{}", dat);
 
         // Reset the slice window for the next iteration.
