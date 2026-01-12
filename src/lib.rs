@@ -3,7 +3,7 @@
 //!
 //! Usage example (using the C++-like RAII API):
 //! ```rust
-//! use perfblock::*;
+//! use perf_event_block::*;
 //! use std::thread::sleep;
 //! use std::time::Duration;
 //!
@@ -16,7 +16,7 @@
 //!
 //! Lambda-style API:
 //! ```rust
-//! use perfblock::*;
+//! use perf_event_block::*;
 //! PerfEventBlock::default_params(1000, true).measure(|p: &mut PerfEventBlock| {
 //!     let mut res = 1;
 //!     for i in 1..(1000*p.scale()) {
@@ -29,7 +29,7 @@
 //!
 //! Custom Events:
 //! ```rust
-//! use perfblock::*;
+//! use perf_event_block::*;
 //! PerfEventBlock::new(1000, Events::default().add_all([
 //!     ("tlb-miss", Builder::from_cache_event(CacheId::DTLB, CacheOpId::Read, CacheOpResultId::Miss)),
 //!     ("page-faults", Builder::from_software_event(SoftwareEventType::PageFaults)),
@@ -40,19 +40,28 @@
 //!
 //! Manual Usage:
 //! ```rust
-//! use perfblock::*;
+//! use perf_event_block::*;
 //! let mut perf = PerfEvent::default();
 //! perf.start_counters().expect("error starting counters");
 //! let scale = 1000*1000;
-//! let mut res = 1;
+//! let mut res: u64 = 1;
 //! for i in 1..scale {
-//!     std::hint::black_box(res += i*res);
+//!     std::hint::black_box(res = res.wrapping_add((i as u64).wrapping_mul(res)));
 //! }
 //! perf.stop_counters().expect("error stopping counters");
 //! perf.print_columns(scale, true);
 //! ```
+
+mod block;
+pub use block::*;
+
+mod timesliced;
+pub use timesliced::*;
+
+mod print;
+pub use print::*;
+
 use std::collections::BTreeMap;
-use std::fmt::Write;
 use std::io;
 use std::time::Instant;
 
@@ -136,6 +145,7 @@ impl CounterState {
         self.counter.reset()?;
         self.counter.start()?;
         self.start = self.counter.read_fd()?;
+        self.end = Self::copy_read_format(&self.start);
         Ok(())
     }
 
@@ -159,6 +169,26 @@ impl CounterState {
             id: 0,
         }
     }
+
+    fn copy_read_format(src: &FileReadFormat) -> FileReadFormat {
+        FileReadFormat {
+            value: src.value,
+            time_enabled: src.time_enabled,
+            time_running: src.time_running,
+            id: src.id,
+        }
+    }
+
+    /// Refresh the `end` snapshot from the kernel without stopping the counter.
+    fn fetch_current(&mut self) -> io::Result<()> {
+        self.end = self.counter.read_fd()?;
+        Ok(())
+    }
+
+    /// Move the `start` snapshot to the previously fetched `end` snapshot.
+    fn advance_start_to_end(&mut self) {
+        self.start = Self::copy_read_format(&self.end);
+    }
 }
 impl From<PerfCounter> for CounterState {
     fn from(counter: PerfCounter) -> Self {
@@ -173,7 +203,7 @@ impl From<PerfCounter> for CounterState {
 /// Low-level counter group.
 pub struct PerfEvent {
     ctrs: Vec<CounterState>, // in the same order as `names`
-    names: Vec<String>,
+    pub(crate) names: Vec<String>,
     t_start: Instant,
     t_stop: Instant,
 }
@@ -273,14 +303,16 @@ impl PerfEvent {
     pub fn duration(&self) -> f64 {
         self.t_stop.duration_since(self.t_start).as_secs_f64()
     }
-    pub fn duration_us(&self) -> u128 {
+
+    pub fn duration_ns(&self) -> u128 {
         self.t_stop.duration_since(self.t_start).as_nanos()
     }
+
     pub fn ipc(&self) -> f64 {
         self.get("instructions") / self.get("cycles")
     }
     pub fn cpus(&self) -> f64 {
-        self.get("task-clock") / (self.duration_us() as f64)
+        self.get("task-clock") / (self.duration_ns() as f64)
     }
     pub fn ghz(&self) -> f64 {
         self.get("cycles") / self.get("task-clock")
@@ -301,7 +333,7 @@ impl PerfEvent {
     }
 
     /// Append CSV columns to `hdr` / `dat` respecting `scale`.
-    fn write_columns(&self, scale: u64, mut cols: impl ColumnWriter) {
+    pub fn write_columns(&self, scale: u64, mut cols: impl ColumnWriter) {
         for (i, name) in self.names.iter().enumerate() {
             cols.write_f64(name.as_str(), self.counter(i) / scale as f64, 2);
         }
@@ -326,35 +358,30 @@ impl PerfEvent {
     fn counter(&self, idx: usize) -> f64 {
         self.ctrs[idx].read()
     }
-}
 
-pub trait ColumnWriter {
-    fn write_str(&mut self, name: &str, val: &str);
-
-    fn write_u64(&mut self, name: &str, val: u64) {
-        self.write_str(name, val.to_string().as_str());
+    /// Read current counters into their `end` snapshot, without stopping.
+    pub fn fetch_current_counters(&mut self) -> io::Result<()> {
+        self.t_stop = Instant::now();
+        let mut res: Vec<io::Error> = self
+            .ctrs
+            .iter_mut()
+            .map(|c| c.fetch_current())
+            .filter_map(|r| r.err())
+            .collect();
+        match res.pop() {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
     }
-    fn write_f64(&mut self, name: &str, val: f64, decimals: usize) {
-        self.write_str(name, &format!("{:.decimals$}", val));
-    }
-}
 
-impl ColumnWriter for (&mut String, &mut String) {
-    fn write_str(&mut self, name: &str, val: &str) {
-        let width = std::cmp::max(name.len(), val.len());
-        let _ = write!(self.0, "{:>width$}, ", name);
-        let _ = write!(self.1, "{:>width$}, ", val);
-    }
-}
-
-struct TransposedWriter<'a>(usize, &'a mut String);
-impl<'a> ColumnWriter for &mut TransposedWriter<'a> {
-    fn write_str(&mut self, name: &str, val: &str) {
-        let width = self.0 + 1;
-        let _ = write!(self.1, "{:<width$}", name);
-        let _ = write!(self.1, ": {}\n", val);
+    /// Advance the slice window by setting `start = end` for every counter.
+    pub fn advance_counter_start_to_end(&mut self) {
+        self.t_start = self.t_stop;
+        self.ctrs.iter_mut().for_each(|c| c.advance_start_to_end());
     }
 }
+
+unsafe impl Send for PerfEvent {}
 
 ////////////////////////////////////////////////////////////////////////////////
 // BenchmarkParameters
@@ -383,160 +410,6 @@ impl BenchmarkParameters {
     fn write_columns(&self, mut cols: impl ColumnWriter) {
         for (k, v) in &self.0 {
             cols.write_str(k, v);
-        }
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// PerfEventBlock
-pub enum PrintMode {
-    Regular(bool), // header
-    Transposed,
-    Disabled,
-}
-impl Default for PrintMode {
-    fn default() -> Self {
-        PrintMode::Regular(true)
-    }
-}
-
-impl From<bool> for PrintMode {
-    fn from(value: bool) -> Self {
-        PrintMode::Regular(value)
-    }
-}
-
-/// High-level RAII wrapper - starts on construction, prints on drop.
-pub struct PerfEventBlock {
-    inner: PerfEvent,
-    scale: u64,
-    params: BenchmarkParameters,
-    print_mode: PrintMode,
-}
-
-impl Default for PerfEventBlock {
-    /// Create a new PerfEventBlock with scale 1, default events, and no additional columns
-    fn default() -> Self {
-        Self {
-            inner: Default::default(),
-            scale: 1,
-            params: Default::default(),
-            print_mode: Default::default(),
-        }
-    }
-}
-
-impl PerfEventBlock {
-    /// Create a new PerfEventBlock instance with custom events, output columns, and scale
-    pub fn new(scale: u64, events: Events, params: BenchmarkParameters, print_mode: impl Into<PrintMode>) -> Self {
-        let mut res = Self {
-            inner: PerfEvent::new_or_empty(events),
-            scale,
-            params,
-            print_mode: print_mode.into(),
-        };
-        res.inner.start_counters().expect("Error starting counters");
-        res
-    }
-
-    /// Create a new PerfEventBlock instance with default events, custom output columns, and scale
-    pub fn default_events(scale: u64, params: BenchmarkParameters, print_mode: impl Into<PrintMode>) -> Self {
-        Self::new(scale, Events::default(), params, print_mode)
-    }
-
-    /// Create a new PerfEventBlock instance with default events, default output columns, and custom scale
-    pub fn default_params(scale: u64, print_mode: impl Into<PrintMode>) -> Self {
-        Self::new(scale, Default::default(), Default::default(), print_mode)
-    }
-
-    /// Set a param (output column) on this instance. Useful for adding columns after
-    /// the block has been started already.
-    pub fn param<S1: Into<String>, S2: Into<String>>(&mut self, k: S1, v: S2) -> &mut Self {
-        self.params.set(k, v);
-        self
-    }
-
-    /// Set multiple parameters
-    pub fn params<S1: Into<String>, S2: Into<String>>(&mut self, params: impl IntoIterator<Item = (S1, S2)>) -> &mut Self {
-        self.params.set_all(params);
-        self
-    }
-
-    /// Sets some final parameters (measured externally), then drops, printing statistics
-    pub fn finalize_with<S1: Into<String>, S2: Into<String>>(mut self, params: impl IntoIterator<Item = (S1, S2)>) {
-        self.params(params);
-    }
-
-    /// Get the associated PerfEvent instance
-    pub fn instance(&mut self) -> &mut PerfEvent {
-        &mut self.inner
-    }
-
-    /// Get the counter with the given name. Note that this
-    /// will only return proper results after this instance
-    /// has been finalized.
-    pub fn counter(&self, name: &str) -> f64 {
-        self.inner.get(name)
-    }
-
-    /// Get the configured scale
-    pub fn scale(&self) -> u64 {
-        self.scale
-    }
-
-    /// Convenience function for measuring the content of the passed lambda
-    pub fn measure<T, F: FnOnce(&mut Self) -> T>(mut self, comp: F) -> T {
-        comp(&mut self)
-        // self dropped here
-    }
-
-    pub fn disable_print(&mut self) {
-        self.print_mode = PrintMode::Disabled;
-    }
-
-    /// Convenience access to std::hint::black_box
-    #[inline]
-    pub fn black_box<T>(&self, dummy: T) -> T {
-        std::hint::black_box(dummy)
-    }
-
-    pub fn print(&self) {
-        match self.print_mode {
-            PrintMode::Regular(header) => {
-                let mut hdr = String::new();
-                let mut dat = String::new();
-                self.params.write_columns((&mut hdr, &mut dat));
-                (&mut hdr, &mut dat).write_f64("time_sec", self.inner.duration(), 6);
-                self.inner.write_columns(self.scale, (&mut hdr, &mut dat));
-                if header {
-                    println!("\n{}", hdr);
-                }
-                println!("{}", dat);
-            }
-            PrintMode::Transposed => {
-                let mut output = String::new();
-                let maxlen = (self.params.0.iter())
-                    .map(|item| item.0)
-                    .chain(self.inner.names.iter())
-                    .fold(0, |acc, item| acc.max(item.len()));
-                let mut wr = TransposedWriter(maxlen, &mut output);
-                self.params.write_columns(&mut wr);
-                (&mut wr).write_f64("time_sec", self.inner.duration(), 6);
-                self.inner.write_columns(self.scale, &mut wr);
-                println!("{}", output);
-            }
-            PrintMode::Disabled => {}
-        }
-    }
-}
-
-impl Drop for PerfEventBlock {
-    /// Finalize the PerfEventBlock, stopping the counters and printing them
-    fn drop(&mut self) {
-        if self.inner.stop_counters().is_ok() {
-            self.print();
-        } else {
-            eprintln!("Error stopping counters");
         }
     }
 }
@@ -592,10 +465,11 @@ mod tests {
         let mut perf = PerfEvent::default();
         perf.start_counters().expect("error starting counters");
         let scale = 1000 * 1000 * 1000;
-        let mut res = 1;
+        let mut _res = 1;
         for i in 1..scale {
-            std::hint::black_box(res += i);
+            _res += i;
         }
+        std::hint::black_box(_res);
         perf.stop_counters().expect("error stopping counters");
         perf.print_columns(scale, true);
     }
