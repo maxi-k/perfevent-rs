@@ -109,9 +109,7 @@ impl PerfEventBlock {
             }
             PrintMode::Transposed => {
                 let mut output = String::new();
-                let maxlen = (self.params.0.iter())
-                    .map(|item| item.0)
-                    .fold(0, |acc, item| acc.max(item.len()));
+                let maxlen = (self.params.0.iter()).map(|item| item.0).fold(0, |acc, item| acc.max(item.len()));
                 let mut wr = crate::print::TransposedWriter(maxlen, &mut output);
                 self.params.write_columns(&mut wr);
                 (&mut wr).write_f64("time_sec", self.inner.duration(), 6);

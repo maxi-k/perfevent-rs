@@ -15,7 +15,11 @@ use crate::{BenchmarkParameters, Events, PerfEvent};
 pub trait BenchmarkParameterUpdates: Send + 'static {
     fn apply(self, params: &mut BenchmarkParameters, scale: &mut u64);
 
-    fn apply_all<I>(params: &mut BenchmarkParameters, scale: &mut u64, iter: I) where Self: Sized, I: Iterator<Item = Self> {
+    fn apply_all<I>(params: &mut BenchmarkParameters, scale: &mut u64, iter: I)
+    where
+        Self: Sized,
+        I: Iterator<Item = Self>,
+    {
         for update in iter {
             update.apply(params, scale);
         }

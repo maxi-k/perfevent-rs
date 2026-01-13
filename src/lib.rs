@@ -362,12 +362,7 @@ impl PerfEvent {
     /// Read current counters into their `end` snapshot, without stopping.
     pub fn fetch_current_counters(&mut self) -> io::Result<()> {
         self.t_stop = Instant::now();
-        let mut res: Vec<io::Error> = self
-            .ctrs
-            .iter_mut()
-            .map(|c| c.fetch_current())
-            .filter_map(|r| r.err())
-            .collect();
+        let mut res: Vec<io::Error> = self.ctrs.iter_mut().map(|c| c.fetch_current()).filter_map(|r| r.err()).collect();
         match res.pop() {
             Some(err) => Err(err),
             None => Ok(()),

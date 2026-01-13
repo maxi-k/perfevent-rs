@@ -32,8 +32,7 @@ fn main() {
     }
 
     // A final update so the last printed line includes it.
-    perf.update(BenchmarkParameters::default().with("done", "true"))
-        .ok();
+    perf.update(BenchmarkParameters::default().with("done", "true")).ok();
 
     // Dropping `perf` stops the sampler thread.
 }
