@@ -82,8 +82,8 @@ impl<Update: BenchmarkParameterUpdates> PerfEventTimesliced<Update> {
     /// Send a benchmark-parameter update to the sampler thread.
     ///
     /// The update will be applied before the next printed sample.
-    pub fn update(&self, upd: Update) -> Result<(), mpsc::SendError<Update>> {
-        self.tx.send(upd)
+    pub fn update(&self, upd: impl Into<Update>) -> Result<(), mpsc::SendError<Update>> {
+        self.tx.send(upd.into())
     }
 
     /// Get a clone of the update sender.
